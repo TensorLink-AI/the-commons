@@ -26,11 +26,14 @@ Run:
     python server.py --db /path/to/shared.db  # custom DB path
     python server.py --require-agent          # reject entries with no agent name
     python server.py --rate-limit 120         # max writes per agent per minute (0=off)
+    python server.py --transport sse --api-token SECRET  # bearer-token gated SSE
+    API_TOKEN=SECRET python server.py --transport sse    # token via env var
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import threading
 import time
@@ -636,6 +639,34 @@ def create_server(
 # ── Entry point ──────────────────────────────────────────────
 
 
+def _bearer_token_middleware(app, token: str):
+    """ASGI middleware that gates access behind a Bearer token."""
+    import hashlib
+    import hmac
+
+    token_bytes = token.encode()
+
+    async def middleware(scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"").decode()
+            if not auth.startswith("Bearer ") or not hmac.compare_digest(
+                hashlib.sha256(auth[7:].encode()).digest(),
+                hashlib.sha256(token_bytes).digest(),
+            ):
+                from starlette.responses import JSONResponse
+
+                response = JSONResponse(
+                    {"error": "Unauthorized"}, status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+        await app(scope, receive, send)
+
+    return middleware
+
+
 def main():
     parser = argparse.ArgumentParser(description="The Commons MCP Server")
     parser.add_argument("--db", default="the_commons.db", help="SQLite database path")
@@ -652,12 +683,28 @@ def main():
         default=60,
         help="Max writes per agent per minute (0 to disable)",
     )
+    parser.add_argument(
+        "--api-token",
+        default=None,
+        help="Bearer token for SSE access (or set API_TOKEN env var)",
+    )
     args = parser.parse_args()
+
+    api_token = args.api_token or os.environ.get("API_TOKEN")
 
     server = create_server(args.db, args.require_agent, args.rate_limit)
 
     if args.transport == "sse":
-        server.run(transport="sse", sse_params={"port": args.port})
+        if api_token:
+            import uvicorn
+
+            starlette_app = server.sse_app()
+            guarded_app = _bearer_token_middleware(starlette_app, api_token)
+            config = uvicorn.Config(guarded_app, host="0.0.0.0", port=args.port)
+            uvicorn.Server(config).run()
+        else:
+            server.settings.port = args.port
+            server.run(transport="sse")
     else:
         server.run(transport="stdio")
 
