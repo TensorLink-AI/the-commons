@@ -696,6 +696,14 @@ def main():
 
     if args.transport == "sse":
         server.settings.port = args.port
+        # Disable DNS rebinding protection so the server accepts requests
+        # forwarded by reverse proxies (e.g. Targon CAAS) with arbitrary
+        # Host headers.
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        server.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
         if api_token:
             import uvicorn
 
