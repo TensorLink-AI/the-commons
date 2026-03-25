@@ -484,7 +484,7 @@ def create_server(
 ) -> FastMCP:
     db = LogDB(db_path)
     limiter = RateLimiter(rate_limit)
-    mcp = FastMCP("The Commons")
+    mcp = FastMCP("The Commons", host="0.0.0.0")
 
     def _check_write(agent: str) -> str | None:
         """Return an error string if the write should be rejected, else None."""
@@ -695,6 +695,7 @@ def main():
     server = create_server(args.db, args.require_agent, args.rate_limit)
 
     if args.transport == "sse":
+        server.settings.port = args.port
         if api_token:
             import uvicorn
 
@@ -703,7 +704,6 @@ def main():
             config = uvicorn.Config(guarded_app, host="0.0.0.0", port=args.port)
             uvicorn.Server(config).run()
         else:
-            server.settings.port = args.port
             server.run(transport="sse")
     else:
         server.run(transport="stdio")
